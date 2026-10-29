@@ -1,266 +1,260 @@
-# Discrete-Thickness Nanoplatelet Kinetics: User Guide and Validation Manual 
+# Discrete-Thickness Nanoplatelet Kinetics — Technical Guide and Validation Manual
 
-> **Applies to:** `npl_kinetics.py` (model, solver, diagnostics, exports) and `test_npl_kinetics.py` (pytest checks).
-> **Scope:** A reduced CdSe nanoplatelet (NPL) kinetic model with a free-monomer reservoir, discrete 3–6 monolayer (ML) populations, first-order and nonlinear exchange kinetics, an effective Gibbs–Thomson (GT) term, and stiff ODE integration in SciPy.
-> **Scientific scope:** This is a **reduced effective-kinetics model** for numerical study and reproducibility. It is **not** a complete kinetic Monte Carlo reconstruction of the 2017 work or a direct calibration to the 2020 CdS experiment.
+> **Project type:** 2026 literature-based model reimplementation, numerical analysis and reproducibility exercise.  
+> **Code:** `npl_kinetics.py` · **Tests:** `test_npl_kinetics.py` (19 pytest test functions).  
+> **Physical system:** reduced CdSe nanoplatelet kinetics; normalized free-monomer and discrete 3–6-monolayer populations.  
+> **Important distinction:** the code adapts equations and parameters reported by Riedinger *et al.* (2017). It does **not** reproduce the full original kinetic Monte Carlo model, perform DFT, or fit the CdS experiments reported by Knüsel *et al.* (2020).
 
-## 1. Files and quick start
+## 1. Research aim and provenance
 
-Put the two Python files in the **same directory**:
+The purpose of this implementation is to examine how **thickness-dependent attachment and detachment kinetics** can generate sequential transient dominance among nanoplatelet populations that exchange material through a common monomer reservoir. It also serves as a numerical study of stiff mass-conserving ODEs, steady states, parameter sensitivity and software validation.
+
+### 1.1 Which parts come from which sources?
+
+| Source | Role in this repository | Not claimed |
+|---|---|---|
+| **[R1] Riedinger *et al.*, Nature Materials (2017)** | Island-energy formulas, rate-law structure, effective material parameters and thickness-instability criteria, as identified by the supplementary-equation references below | A full reproduction of the paper's kMC calculations, experimental images, or an independently developed theory |
+| **[R2] Knüsel *et al.*, Chemistry of Materials (2020)** | Independent context for observed nanoplatelet ripening and thickness-resolved absorption features in **CdS** | Calibration of this **CdSe** kinetic model, or a prediction of CdS absorption spectra |
+| **[R3] Ott *et al.*, Nano Letters (2017)** | Background on semiconductor nanoplatelet ripening | Numerical validation of this implementation |
+| **This Python implementation** | A reduced 3–6 ML population model; SciPy stiff solvers; explicit mass-balance and stationary-state checks; source/parameter audit; optional lateral-size and regularization variants | New experimental evidence, a novel atomistic mechanism, or original DFT/kMC calculations |
+
+Source pointers into [R1] supplementary information: **S1–S7** for energetics, **S8–S24** for rate equations, equilibria and rates, and **S29–S30** for the parameter-dependent 2-ML versus 3-ML growth criterion. Equation labels below are **literature references**, not numbering newly introduced by this code.
+
+### 1.2 What is and is not reproduced?
+
+**Implemented:** thickness-resolved rates; linear and nonlinear effective population exchange; a shared monomer reservoir; analytic linear reference solution; stiff ODE simulations; stationary-state calculations; conservation/equilibrium/solver checks; tests for false peak detection.
+
+**Not implemented:** direct transitions $m\to m+1$ between platelets; individual platelet number and area distributions; stochastic kMC events; spatial diffusion fields; dynamic lateral-size growth; first-principles DFT; absorption wavelengths or spectra; parameter fits to new experimental datasets.
+
+## 2. Environment, structure and quick start
+
+Requires **Python ≥ 3.10** and `numpy`, `scipy`, `matplotlib`, `pytest`. Dependency versions are not pinned. `matplotlib` is only required for plots.
 
 ```text
-npl_project/
-├── npl_kinetics.py         # Parameters, rate laws, ODEs, solvers, exports
-├── test_npl_kinetics.py    # 19 pytest test functions
-└── README.md               # This guide
+NPL_re/
+├── npl_kinetics.py          # Parameters, rate laws, ODEs, solvers, exports
+├── test_npl_kinetics.py     # 19 test_* functions
+└── README.md                # This technical guide
 ```
 
-Use **Python 3.10 or newer**; the implementation uses union annotations (`X | None`) and parameterized built-in containers (`tuple[...]`). Required for the simulation: **NumPy and SciPy**. **Matplotlib** is required when producing figures; **pytest** is required to run tests. The provided scripts do not pin dependency versions.
-
-Install the packages:
+From the repository root:
 
 ```bash
+cd NPL_re
 python -m pip install numpy scipy matplotlib pytest
-```
-
-Check the interpreter and inspect all options:
-
-```bash
-python --version
 python npl_kinetics.py --help
-```
-
-Run the default simulation:
-
-```bash
 python npl_kinetics.py
+python -m pytest -q test_npl_kinetics.py
 ```
 
-Run without plotting (Matplotlib not needed):
+For tabular output without plotting:
 
 ```bash
 python npl_kinetics.py --no-plot --output results_no_plot
 ```
 
-Run the test suite:
+The default time grid contains **$t=0$ plus 400 logarithmically spaced positive times**, starting at $10^{-3}$ s and extending to $10^9$ s. The integrator uses **adaptive internal steps**; these 401 points are a reporting grid, not the step sequence. The initial condition places all normalized inventory in the free pool.
 
-```bash
-python -m pytest -v test_npl_kinetics.py
-# Compact summary
-python -m pytest -q test_npl_kinetics.py
-```
+## 3. Model definitions and equations
 
-By default, the physical initial condition is applied at **t=0** and the horizon extends to **1e9 s** . The output grid contains **t=0 plus 400 logarithmically spaced positive times**, starting at `1e-3 s`—typically **401 data rows**.
+### 3.1 Conserved populations
 
-## 2. Scientific references and provenance
+With default thicknesses $m\in\{3,4,5,6\}$:
 
-### 2.1 Primary theoretical source: CdSe
+$$
+\mathbf{x}(t)=[N_0(t),N_3(t),N_4(t),N_5(t),N_6(t)]^\mathsf{T},
+\qquad N_{\mathrm{tot}}=N_0+\sum_m N_m=1.
+$$
 
-**[R1]** Riedinger, A.; Ott, F. D.; Mule, A.; *et al.* **An intrinsic growth instability in isotropic materials leads to quasi-two-dimensional nanoplatelets.** *Nature Materials* **2017**, *16*, 743–748. DOI: [10.1038/nmat4889](https://doi.org/10.1038/nmat4889).
+- $N_0$ is the **normalized inventory of free monomers**.
+- $N_m$ is the **normalized number of monomer units in the thickness-$m$ population**, *not* the number of individual nanoplatelets.
+- All groups exchange matter through the shared free pool. There is **no explicit direct $m\to m+1$ conversion** in the right-hand side.
+- Total inventory is normalized to one by default; rates have effective units of s$^{-1}$ within this reduced normalization.
 
-- Key supplementary equations: **S1–S7** (island energetics), **S8–S24** (mass balance, kinetics, equilibrium, attachment/detachment coefficients), and **S29–S30** (the parameter-dependent 2-ML/3-ML growth criterion).
+### 3.2 Facet energetics (source: [R1], SI S1, S5 and S7)
 
-### 2.2 Independent experimental context: CdS parameter fit
+The general energy change is
 
-**[R2]** Knüsel, P. N.; Riedinger, A.; Rossinelli, A. A.; Ott, F. D.; Mule, A. S.; Norris, D. J. **Experimental Evidence for Two-Dimensional Ostwald Ripening in Semiconductor Nanoplatelets.** *Chemistry of Materials* **2020**, *32*(7), 3312–3319. DOI: [10.1021/acs.chemmater.0c01238](https://doi.org/10.1021/acs.chemmater.0c01238).
-
-`Knuesel_etal_MS_accepted.pdf` describes CdS NPL ripening and observations supporting redistribution from small platelets to thicker populations.
-- The experiment includes ripening temperatures **160, 170, 180, and 190 °C**. The main text (p. 5, Fig. 2) discusses absorption features assigned to **3 ML: 374 nm; 4 ML: 407 nm; 5 ML: 429 nm**, as well as the thin **2-ML: 326 nm** signal.
-- These wavelengths are **experimental CdS reference observations**, **not optical output** from this code. The program does not calculate excitonic transition wavelengths or absorption spectra.
-
-**[R3]** Ott, F. D.; *et al.* **Ripening of Semiconductor Nanoplatelets.** *Nano Letters* **2017**, *17*, 6870–6877. DOI: [10.1021/acs.nanolett.7b03191](https://doi.org/10.1021/acs.nanolett.7b03191).
-
-## 3. States, equations, and model assumptions
-
-### 3.1 Discrete ML populations and free-monomer pool
-
-The default thickness set is `thickness_ml=(3,4,5,6)` with state vector
-
-\[
-\mathbf x(t)=[N_0(t),N_3(t),N_4(t),N_5(t),N_6(t)]^{\mathsf T},\qquad
-N_{\mathrm{tot}}=N_0+\sum_m N_m=1.
-\]
-
-Here, \(N_m\) is the **normalized number of monomer units stored in the thickness-m population**, **not** a count of individual platelets. The thickness populations exchange material through one shared free-monomer pool. **No direct `m → m+1` transition term exists** in the ODEs; sequential dominance emerges from pool-mediated exchange.
-
-### 3.2 Nucleation energetics: supplementary Eqs. S1, S5, S7
-
-Total energy change:
-
-\[
+$$
 \Delta E=E_V\Delta V+E_A\Delta A+E_L\Delta L.\tag{S1}
-\]
+$$
 
-Wide-facet island:
+For a wide-facet island with area $a$:
 
-\[
+$$
 E_{\mathrm{wide}}(a)=L_1E_Va+(4L_1E_A+2E_L)\sqrt a+4L_1E_L.\tag{S5}
-\]
+$$
 
-Spanning-island branch on a facet of thickness \(m\):
+For a spanning island on a facet of thickness $m$:
 
-\[
-E_{\mathrm{narrow},m}(a)=\left(L_1E_V+\frac{2E_A}{m}\right)a
+$$
+E_{\mathrm{narrow},m}(a)=
+\left(L_1E_V+\frac{2E_A}{m}\right)a
 +2mL_1^2E_A+(m+4)L_1E_L.\tag{S7}
-\]
+$$
 
-The actual `compute_rates()` implementation uses the **intercept of the narrow-facet S7 branch as an approximate nucleation barrier**:
+**Implementation choice:** `compute_rates()` uses the **intercept** of the S7 narrow-facet energy branch as an **approximate** nucleation barrier,
 
-\[
+$$
 \Delta E_m^\ddagger\approx 2mL_1^2E_A+(m+4)L_1E_L.
-\]
+$$
 
-### 3.3 Baseline thermodynamics and optional Gibbs–Thomson correction
+It does not numerically reconstruct the full nucleation free-energy landscape or reproduce individual kMC island events.
 
-The default S21-type formation-energy expression is:
+### 3.3 Thickness thermodynamics and optional lateral correction
 
-\[
+The default [R1] S21-type formation-energy expression is
+
+$$
 \Delta H_{f,m}=2L_1^3E_V+\frac{4L_1^2E_A}{m},\qquad
 A_m=\exp\!\left(\frac{\Delta H_{f,m}}{k_BT}\right)=\frac{k_{-m}}{k_m}.
-\]
+$$
 
-In `compute_rates()`, define \(\Omega=2L_1^3\), \(h=mL_1\), and \(\gamma=E_A\). The effective formation-energy proxy is implemented as
+The implementation also uses $\Omega=2L_1^3$, $h=mL_1$ and $\gamma=E_A$ to express an effective formation energy:
 
-\[
+$$
 \Delta H_{f,m}^{\mathrm{eff}}=
-\underbrace{\Omega E_V}_{\text{bulk}}
-+\underbrace{\frac{2\gamma\Omega}{h}}_{\text{thickness}}
-+\underbrace{\frac{2\gamma\Omega}{L_m}}_{\text{optional lateral correction}}.
-\]
+\underbrace{\Omega E_V}_{\text{bulk}}+
+\underbrace{\frac{2\gamma\Omega}{h}}_{\text{thickness}}+
+\underbrace{\frac{2\gamma\Omega}{L_m}}_{\text{optional lateral extension}}.
+$$
 
-- **Default (`lateral_nm=None`)**: no lateral term; the S21 baseline is recovered.
-- **If `lateral_nm` is provided**: one **fixed representative** lateral dimension per thickness group, specified in nm and converted internally to Å. This is an **extension with simplified square-platelet/equal-effective-facet-energy geometry**
+- With `lateral_nm=None` (**default**), the lateral contribution is zero and the S21-type thickness baseline is recovered.
+- With `lateral_nm=(L3,L4,L5,L6)`, each population receives one **fixed** effective lateral length in nm (internally converted to Å). This simplified square-platelet/equal-effective-facet-energy **extension is not a dynamic model of lateral-size distributions**.
+- A smaller fixed lateral length increases the effective formation-energy contribution and hence changes rates. This is a **model extension**, not a claim to have reproduced measured lateral growth.
 
-### 3.4 Attachment/detachment rates: supplementary Eqs. S19–S21
+### 3.4 Attachment and detachment (source: [R1], SI S19–S21)
 
-\[
+$$
 k_m=C_0m\exp\!\left(-\frac{\Delta E_m^\ddagger}{k_BT}\right),\qquad
 k_{-m}=k_mA_m.
-\]
+$$
 
-The arrays `Rates.k_on` and `Rates.k_off` follow the order in `Rates.ms`. Their reported units are `s^-1` for this **normalized effective model**. 
+`Rates.k_on` and `Rates.k_off` are aligned with `Rates.ms`. The rates are **calculated from effective model parameters**; they are not independent experimental measurements.
 
-### 3.5 Linear and nonlinear ODE systems
+### 3.5 Linear and nonlinear mass-balance laws
 
-First-order model (SI S8–S12):
+**Linear exchange** (SI S8–S12):
 
-\[
+$$
 \dot N_m=k_mN_0-k_{-m}N_m,\qquad
 \dot N_0=-\sum_m\dot N_m,\qquad
-\dot{\mathbf x}=K\mathbf x.
-\]
+\dot{\mathbf{x}}=K\mathbf{x}.
+$$
 
-`build_generator()` creates a matrix with zero column sums. `exact_linear()` evaluates \(\exp(Kt)\mathbf x(0)\), and `eigen_linear()` checks the eigenmode decomposition (SI S13–S18).
+`build_generator()` constructs $K$ with **zero column sums**. `exact_linear()` evaluates $\exp(Kt)\mathbf{x}(0)$ and `eigen_linear()` supplies an independent eigenmode reconstruction (SI S13–S18).
 
-Nonlinear model (SI S22):
+**Nonlinear exchange** (SI S22):
 
-\[
+$$
 \dot N_m=k_mN_0^2-k_{-m}\sqrt{N_m},\qquad
 \dot N_0=-\sum_m\dot N_m.
-\]
+$$
 
-With the **optional, model-changing** `sqrt_epsilon>0`, the detachment term becomes
+`nonlinear_rhs()` protects evaluations near slightly negative numerical trial states using clipping. **This does not impose mathematical nonnegative constraints** on the solver; materially negative solutions should be treated as a warning.
 
-\[
-g_\varepsilon(N_m)=\sqrt{\max(N_m,0)+\varepsilon}-\sqrt\varepsilon.
-\]
+For `sqrt_epsilon>0`, the detachment factor is deliberately modified:
 
-The `nonlinear_rhs()` implementation also protects the free-pool and bound-population inputs with `max`/`np.maximum`. This safeguards evaluations near negative numerical trial states, but it **does not impose strict nonnegative state constraints**. Large negative populations indicate a model or integration problem. The analytic Jacobian is provided **only when `sqrt_epsilon>0`** and is interpreted on positive interior states; clipping still introduces a nonsmooth boundary at zero.
+$$
+g_{\varepsilon}(N_m)=\sqrt{\max(N_m,0)+\varepsilon}-\sqrt{\varepsilon}.
+$$
 
-### 3.6 Stationary distributions
+This regularization **changes the model** and is **disabled by default** (`sqrt_epsilon=0`). An analytic Jacobian is provided only when $\varepsilon>0$, and corresponds to positive interior states; clipping remains nonsmooth at the boundary.
 
-Linear equilibrium: \(N_m/N_0=k_m/k_{-m}\). Original nonlinear equilibrium:
+### 3.6 Stationary states
 
-\[
+Linear equilibrium satisfies
+
+$$
+\frac{N_m}{N_0}=\frac{k_m}{k_{-m}}.
+$$
+
+Unregularized nonlinear equilibrium satisfies
+
+$$
 \frac{\sqrt{N_m}}{N_0^2}=\frac{k_m}{k_{-m}},\qquad
 N_m=\left(\frac{k_m}{k_{-m}}\right)^2N_0^4.
-\]
+$$
 
-For a regularized law and \(r_m=k_m/k_{-m}\):
+For the regularized model, with $r_m=k_m/k_{-m}$:
 
-\[
+$$
 N_m=r_m^2N_0^4+2r_m\sqrt\varepsilon\,N_0^2.
-\]
+$$
 
-`stationary_linear()` evaluates the first-order distribution analytically. `stationary_nonlinear()` uses `scipy.optimize.brentq` to solve a **single scalar equation** enforcing total inventory, rather than integrating until an arbitrary long time.
+`stationary_linear()` evaluates the linear stationary state. `stationary_nonlinear()` uses `scipy.optimize.brentq` on a **scalar total-inventory equation**, rather than inferring equilibrium only by long-time integration.
 
-## 4. Defaults, units, and source classification
+## 4. Parameter values and provenance
 
-`Parameters()` is a frozen dataclass. The CLI overrides **temperature** and **fixed lateral sizes**, whereas the other physical constants may be changed through the Python API, not the existing CLI.
+The default physical configuration is `Parameters()`. The CLI varies temperature and optional lateral sizes; other material parameters can be changed through the Python API.
 
-| `Parameters` field | Default | Unit | Provenance / meaning |
+| Field | Default | Units | Meaning / provenance |
 |---|---:|---|---|
-| `temperature_K` | `473.15` | K | 200 °C model/example temperature |
+| `temperature_K` | 473.15 | K | Example model temperature, 200 °C |
 | `kB_eV_K` | `8.617333262e-5` | eV/K | Boltzmann constant |
-| `layer_height_A` | `3.10` | Å | Geometrical monolayer height, Riedinger SI S4.a |
-| `surface_eV_A2` | `5.7e-3` | eV/Å² | DFT, acetate-passivated CdSe(001) |
-| `edge_eV_A` | `37.1e-3` | eV/Å | DFT-based representative step-edge value |
-| `volume_eV_A3` | `-1.5e-3` | eV/Å³ | Constrained by 2/3-ML observations; **not a directly computed DFT value** |
-| `prefactor_s1` | `2.8e11` | s⁻¹ | Effective fit to time-resolved 3/4-ML absorption behavior |
-| `thickness_ml` | `(3,4,5,6)` | ML | Default discrete groups; customizable via API |
-| `lateral_nm` | `None` | nm | Lateral GT extension disabled by default |
+| `layer_height_A` | 3.10 | Å | Monolayer height, [R1] SI S4.a |
+| `surface_eV_A2` | `5.7e-3` | eV/Å² | DFT-based acetate-passivated CdSe(001) surface value from source |
+| `edge_eV_A` | `37.1e-3` | eV/Å | Representative DFT-based step-edge value from source |
+| `volume_eV_A3` | `-1.5e-3` | eV/Å³ | Source-constrained using 2-/3-ML observations; **not directly calculated by DFT here** |
+| `prefactor_s1` | `2.8e11` | s$^{-1}$ | Effective fitted source prefactor |
+| `thickness_ml` | `(3,4,5,6)` | ML | Default thickness categories |
+| `lateral_nm` | `None` | nm | Optional lateral extension disabled by default |
 
-Model-derived rates with the reference inputs (not independently measured rate constants):
+At default values, the derived quantities (rounded) are:
 
-| m / ML | Approx. narrow barrier / eV | Effective formation energy / eV | `k_on` / s⁻¹ | `k_off` / s⁻¹ |
+| ML | Approx. narrow barrier (eV) | Formation energy (eV) | $k_m$ (s$^{-1}$) | $k_{-m}$ (s$^{-1}$) |
 |---:|---:|---:|---:|---:|
 | 3 | 1.133732 | −0.016337 | 7.0515e−1 | 4.7235e−1 |
 | 4 | 1.358296 | −0.034596 | 3.8130e−3 | 1.6322e−3 |
 | 5 | 1.582860 | −0.045551 | 1.9330e−5 | 6.3246e−6 |
 | 6 | 1.807424 | −0.052855 | 9.4070e−8 | 2.5732e−8 |
 
-As additional checks, the S5 wide-facet calculation gives a critical area of approximately **242.69 Å²** and an energy of **1.58855 eV**; the effective narrow-growth threshold is \(m_c\approx2.4516\). These values are **parameter-dependent model predictions**.
+Additional reference calculations using S5 give a wide-facet critical island area of approximately **242.69 Å²** and energy **1.58855 eV**; the approximate narrow-growth threshold is $m_c\approx2.4516$. These depend on the **chosen model parameters**.
 
-## 5. Command-line interface: every option and default
+## 5. Command-line usage
 
 ```bash
 python npl_kinetics.py [OPTIONS]
 ```
 
-| Flag | Type / accepted values | Default | Purpose |
-|---|---|---|---|
-| `--temperature` | `float` in K | `473.15` | Changes thermal energy and rate/equilibrium factors; must be positive |
-| `--t-end` | `float` in seconds | `1e9` | End time; must be strictly greater than `1e-3` |
-| `--points` | `int` | `400` | Number of positive logarithmic output times; minimum 4, plus t=0 |
-| `--method` | `LSODA`, `BDF`, `Radau` | `LSODA` | Stiff SciPy ODE integrator |
-| `--rtol` | `float` | `1e-9` | Relative local error tolerance; must be positive |
-| `--atol` | `float` | `1e-12` | Absolute local error tolerance; must be positive |
-| `--sqrt-epsilon` | `float` | `0.0` | 0 = original nonlinear square-root term; positive = **modified law** |
-| `--lateral-nm` | **exactly four** floats | omitted | `L3 L4 L5 L6` in nm; positive values |
-| `--output` | directory path | `npl_outputs` | Directory for files, created if needed |
-| `--no-plot` | Boolean flag | off | Suppresses PNG generation; Matplotlib optional |
-| `--help` / `-h` | flag | — | Prints argparse-generated help |
+| Flag | Default | Function / restrictions |
+|---|---|---|
+| `--temperature` | `473.15` | Positive temperature, K |
+| `--t-end` | `1e9` | Final time in seconds, greater than `1e-3` |
+| `--points` | `400` | Number of positive log-spaced output times (minimum 4); $t=0$ added |
+| `--method` | `LSODA` | `LSODA`, `BDF`, `Radau` |
+| `--rtol` | `1e-9` | Positive relative tolerance |
+| `--atol` | `1e-12` | Positive absolute tolerance |
+| `--sqrt-epsilon` | `0` | Zero = original unregularized law; positive = **modified kinetics** |
+| `--lateral-nm` | omitted | **Exactly four positive lengths**: `L3 L4 L5 L6`, nm |
+| `--output` | `npl_outputs` | Output directory, relative to working directory unless absolute |
+| `--no-plot` | off | Skip PNG; CSV and JSON are still generated |
+| `-h`, `--help` | — | Show argparse help |
 
-**Not implemented as CLI flags:** `--thickness-ml`, `--model`, `--initial-state`, and `--total`. The supplied `main()` runs **both models**, starts with normalized total inventory one **entirely in the free pool**, and fixes 3–6 ML by default. To change those assumptions, use the Python API and adjust the affected arguments.
-
-**Command examples:**
+**Not available as CLI flags:** changing the thickness list, the initial state, or choosing only one of the models. The supplied `main()` runs both models with a normalized total inventory of one. Use the Python API for nondefault populations or initial conditions.
 
 ```bash
-# Default: both kinetic models, 200 °C, four populations
+# Default case
 python npl_kinetics.py
 
-# Save only CSV and JSON; no PNG dependency
+# CSV + JSON only
 python npl_kinetics.py --no-plot --output out_data
 
-# End at 24 hours; 250 positive output samples (+ t=0)
+# 24 h simulation; 250 positive output times plus t=0
 python npl_kinetics.py --t-end 86400 --points 250 --output out_24h
 
-# Cross-check using a different stiff integrator
+# Alternative stiff methods
 python npl_kinetics.py --method Radau --rtol 1e-9 --atol 1e-12 --output out_radau
+python npl_kinetics.py --temperature 500 --method BDF --output out_500K
 
-# Enable the optional geometry extension (L3 to L6)
+# Optional fixed lateral dimensions (nm), 3 to 6 ML
 python npl_kinetics.py --lateral-nm 10 15 20 25 --output out_lateral
 
-# Enable a MODEL-CHANGING regularized square-root law
+# Optional MODEL-CHANGING regularization
 python npl_kinetics.py --sqrt-epsilon 1e-9 --output out_eps
-
-# Vary temperature (other material parameters remain fixed)
-python npl_kinetics.py --temperature 500 --method BDF --output out_500K
 ```
 
-## 6. Python API and input/output contract
-
-The program can also be imported:
+### Python API example
 
 ```python
 import numpy as np
@@ -285,162 +279,102 @@ print(diagnostics(nonlinear_solution, x0))
 print(stationary_nonlinear(r))
 ```
 
-Principal functions and classes:
+## 6. Numerical methodology and validation
 
-| Function / class | Inputs | Return / side effect |
+### 6.1 Why use stiff integrators?
+
+At the reference parameters, nonzero eigenvalues of the *linear* generator are approximately $-1.18$, $-3.16\times10^{-3}$, $-1.03\times10^{-5}$ and $-3.76\times10^{-8}$ s$^{-1}$. These widely separated time scales can make long-horizon explicit integration inefficient or unstable. The code uses SciPy's **LSODA** by default and offers **BDF** and **Radau**.
+
+`solve_stiff()` requests dense output. For the linear system, the known generator $K$ can be supplied as a Jacobian. For the nonlinear system, an analytic Jacobian is supplied **only when the modified regularized model has `sqrt_epsilon>0`**.
+
+### 6.2 Independent numerical checks
+
+| Check | What it establishes | What it does not establish |
 |---|---|---|
-| `Parameters(...)` | Temperature, materials, thicknesses, optional lateral sizes | Validated input dataclass |
-| `Rates` | Aligned arrays | Barrier, formation energies, coexistence factors, attachment/detachment rates |
-| `compute_rates(p)` | `Parameters` | `Rates` |
-| `build_generator(r)` | `Rates` | `(n+1) × (n+1)` linear generator `K` |
-| `initial_state(n,total=1)` | Number of thickness groups, normalized total | `[total,0,...,0]` |
-| `linear_rhs(t,x,K)` | State and linear generator | `K @ x` |
-| `nonlinear_rhs(t,x,r,sqrt_epsilon=0)` | State, rate arrays, optional regularization | Nonlinear derivative vector |
-| `nonlinear_jacobian(t,x,r,sqrt_epsilon)` | **positive** epsilon | Analytic Jacobian of the regularized RHS |
-| `exact_linear(K,x0,times)` | Generator, initial state, time vector | Matrix-exponential solution, shape `(n+1,len(times))` |
-| `eigen_linear(K,x0,times)` | Same | `(solution,eigenvalues,eigenvector_condition_number)` |
-| `solve_stiff(kind,r,K,x0,times,...)` | `linear`/`nonlinear`, solver settings | SciPy `OdeResult` (`t`, `y`, `sol`, `success`, `nfev`, `njev`) |
-| `stationary_linear(r,total=1)` | Rates, total | Linear stationary state |
-| `stationary_nonlinear(r,total=1,sqrt_epsilon=0)` | Rates, total, regularization | Nonlinear stationary state |
-| `find_reliable_peaks(sol,r,eq,kind,K,...)` | Dense numerical solution, equilibrium, threshold | One `Peak` per population; `t_seconds=None` if not verified |
-| `diagnostics(sol,x0)` | Solver result and initial state | Conservation error, minimum inventory, evaluation counts |
-| `paper_reference_audit(p,r)` | Parameters and rates | JSON-serializable source and computed-data dictionary |
-| `export_csv` / `export_paper_audit` / `export_plot` | Output path and arrays | Writes files; returns `None` |
+| $\sum_i K_{ij}=0$ | Algebraic inventory conservation in the linear law | Validity of physical rate assumptions |
+| $\sum_i\dot N_i=0$ | Algebraic inventory conservation for both right-hand sides | Strict numerical conservation at any tolerance |
+| Matrix exponential vs eigenmodes vs stiff solve | Agreement of three linear solution routes | Uniqueness of the physical model |
+| Nonlinear stationary root vs long-time trajectory | Equilibrium consistency | Experimental ripening equilibrium |
+| LSODA vs Radau | Numerical robustness for tested settings | Global convergence under every parameter choice |
+| Finite differences vs analytic regularized Jacobian | Local derivative implementation at positive interior states | Smoothness of the unregularized law at zero |
+| Peak derivative and prominence check | Reduced susceptibility to flat-plateau numerical artifacts | Validation of experimentally observed peak times |
 
-**Immutability caveat:** `@dataclass(frozen=True)` prevents attribute reassignment but does **not** make contained NumPy arrays read-only.
+Always inspect mass drift, minimum population, solver status and sensitivity to tolerances. `rtol` and `atol` control **local** error estimates; they are not a guarantee of strict nonnegativity or a specified **global** solution error.
 
-## 7. Stiff integration, numerical accuracy, and validation
+### 6.3 Illustrative default nonlinear behavior
 
-### 7.1 Why stiff methods?
-
-The default linear generator has widely separated nonzero decay eigenvalues, approximately \(-1.18,-3.16\times10^{-3},-1.03\times10^{-5},-3.76\times10^{-8}\) s⁻¹. Such multiple time scales can restrict the stability step of explicit solvers over a long horizon. The CLI therefore offers `LSODA` (automatic stiff/nonstiff switching), `BDF`, and `Radau`.
-
-`solve_stiff()` requests `dense_output=True`. The `times` vector is an **output grid**, not the integrator's internal adaptive-step sequence. For the linear model, it supplies `K` as the Jacobian (a callable for LSODA). For the nonlinear model, it supplies the analytic Jacobian **only for `sqrt_epsilon>0`**; otherwise the integrator handles derivatives using its own methods.
-
-### 7.2 Independent solution/verification routes
-
-1. **`exact_linear`** evaluates `scipy.linalg.expm(K*t) @ x0`; this is a mathematically exact representation but is still evaluated in floating-point arithmetic.
-2. **`eigen_linear`** evaluates an eigenmode decomposition, adjusts the known conserved zero eigenvalue, and checks eigenbasis conditioning and unwanted imaginary components.
-3. **`solve_stiff`** computes linear or nonlinear solutions via LSODA, BDF, or Radau and compares them against analytic references, stationary states, and conservation invariants.
-
-### 7.3 What to check
-
-- **Algebraic conservation:** `K.sum(axis=0) ≈ 0`, and the sum of either RHS output is approximately zero.
-- **Trajectory conservation:** \(\max_t|\sum_iN_i(t)-N_{\rm tot}|\) remains within chosen numerical tolerances.
-- **Nonnegativity:** `minimum_population` should have no materially negative value; clipping in `nonlinear_rhs` is a safeguard, not a constrained solver.
-- **Linear agreement:** eigenmode reconstruction, matrix exponential, and stiff linear integration match to suitable tolerances.
-- **Stationarity:** zero net flux and conservation hold at the stationary state; long-horizon nonlinear results approach that state.
-- **Jacobian:** finite-difference checks of the regularized Jacobian on positive interior states and its column-sum identity.
-- **Reliable peaks:** a positive-to-negative derivative crossing **and** excess above the stationary population exceeding `prominence_min` (default `1e-4`). A late-time `np.argmax` on a flat 6-ML trajectory is not, by itself, evidence of a physical peak.
-
-`rtol` and `atol` control **local numerical error estimates**. They do **not** guarantee a particular global conservation error or strict state positivity.
-
-### 7.4 Indicative reference behavior
-
-Using the default normalized setup, the nonlinear model typically yields:
-
-| Population | Accepted finite-time peak |
+| Thickness | Accepted finite-time maximum |
 |---|---:|
-| 3 ML | approximately **0.00127 h** (~4.58 s) |
-| 4 ML | approximately **0.527 h** |
-| 5 ML | approximately **159.5 h** |
-| 6 ML | **No verified finite peak**; approaches a late-time plateau |
+| 3 ML | ~0.00127 h (~4.58 s) |
+| 4 ML | ~0.527 h |
+| 5 ML | ~159.5 h |
+| 6 ML | **No verified finite-time maximum**; late-time plateau |
 
-These are results of the **reduced code model and its detection criteria**, not separately measured experimental peak times. The peak classification may change with temperature, geometry, regularization, solver tolerance, output sampling, or simulation horizon.
+A peak is accepted only if there is a **positive-to-negative derivative crossing** and a sufficient excess above the stationary population (`prominence_min=1e-4` by default). A small numerical bump in an almost flat 6-ML curve must **not** be interpreted as a physical peak. Peak classifications can depend on parameters, solver tolerance, regularization, representative lateral sizes, and time horizon.
 
-## 8. Files written: names, schemas, and caveats
+## 7. Outputs and reproducibility contract
 
-By default, outputs are written under `npl_outputs/`; set `--output` to change the directory.
+The program generates these paths beneath `--output` (default `npl_outputs/` relative to the execution directory):
 
 ```text
 npl_outputs/
-├── npl_results.csv                # Normalized time courses for both kinetic laws
-├── original_paper_reference.json # Original-source metadata and derived-data audit
-└── npl_comparison.png            # Linear/nonlinear comparison; omitted with --no-plot
+├── npl_results.csv
+├── original_paper_reference.json
+└── npl_comparison.png            # absent with --no-plot
 ```
 
-### 8.1 `npl_results.csv`
+### `npl_results.csv`
 
-The first column is `time_s`. With four thickness populations there are **11 columns**: time, five linear state columns, and five nonlinear state columns:
+The default case has **11 columns**: `time_s`, then five `linear_*` inventory fractions (`N0,N3,N4,N5,N6`), then five `nonlinear_*` fractions. The `linear_*` columns are calculated from the **matrix exponential** reference; numerical integration of the linear system serves as a verification route. The file uses UTF-8 with BOM and approximately 12 significant figures.
 
-```text
-time_s,linear_N0,linear_N3,linear_N4,linear_N5,linear_N6,nonlinear_N0,nonlinear_N3,nonlinear_N4,nonlinear_N5,nonlinear_N6
-0,...
-0.001,...
-...
-```
+**These are normalized inventory fractions**, not dimensional particle concentrations, numbers of nanoplatelets, or optical intensities. The output grid includes $t=0$; the logarithmic comparison plot omits that first value because $\log(0)$ is undefined.
 
-**Important:** `linear_*` values are written from the **`exact_linear()` matrix-exponential solution**; `solve_stiff("linear",...)` is used for verification and console diagnostics, not for these CSV columns. CSV encoding is `utf-8-sig`, and floating-point values are formatted to roughly 12 significant digits. All state columns represent **normalized monomer inventory fractions**, not platelet counts, dimensional concentrations, or absorption amplitudes.
+### `original_paper_reference.json`
 
-### 8.2 `original_paper_reference.json`
+`paper_reference_audit()` exports source/reference information, declared original values, current parameter values, source-equation identifiers, derived model rates/barriers, and flags recording whether the baseline equations or optional extensions were used. The data are **model calculations and provenance records**, not independently measured material constants.
 
-Top-level keys produced by `paper_reference_audit()`:
+### `npl_comparison.png` and console output
 
-```json
-{
-  "reference_original_CdSe": "...",
-  "reference_independent_CdS_experiment": "...",
-  "original_values": {},
-  "equations": {},
-  "CdS_independent_observations": {},
-  "computed_from_selected_parameters": {},
-  "original_equations_unmodified": true,
-  "barrier_model": "...",
-  "lateral_gt_extension_enabled": false,
-  "note": "..."
-}
-```
+The PNG compares normalized linear and nonlinear population histories. Console diagnostics include rate tables, eigenvalues, eigenbasis conditioning, numerical comparisons, conservation error, stationary states and accepted peak times.
 
-`original_values` compares reference parameter values to the current `Parameters` values, including origin and a `same_as_original` flag. `computed_from_selected_parameters` records the wide-facet critical area and peak energy, approximate narrow barriers, effective formation energies, thickness-specific rates, and the critical growth conditions.
+## 8. Automated test coverage
 
-### 8.3 `npl_comparison.png` and console output
-
-The optional PNG plots the **linear** and **nonlinear** time courses side by side using a logarithmic time axis and normalized monomer inventories. The plotting function omits the `t=0` sample because `log(0)` is undefined. The console prints a parameter/rate table, eigenvalues, eigenbasis condition number, comparisons with the matrix exponential, integration diagnostics, stationary distributions, and classified nonlinear peak times.
-
-## 9. Testing: `test_npl_kinetics.py`
-
-The **uploaded test file contains 19 `test_*` functions**, using two module-scoped fixtures: `base` and `nonlinear_case`. Numerical thresholds in the tests are **acceptance criteria for this implementation**, not empirical validation of the physical theory.
-
-| Test function | What it checks |
-|---|---|
-| `test_reference_rates_match_previous_example` | Computed default rates agree with the reference example |
-| `test_2ml_threshold_is_parameter_dependent` | 2-ML viability depends on selected bulk energy |
-| `test_thickness_gibbs_thomson_step` | Monotonic thickness GT and coexistence-factor trends |
-| `test_lateral_correction_is_optional_and_monotone` | Optional geometry correction; smaller sizes increase the dissolution proxy |
-| `test_invalid_parameter_inputs_are_rejected` | Selected invalid input cases are rejected |
-| `test_generator_has_zero_column_sums_and_nonnegative_offdiagonals` | Linear generator's conservation and sign structure |
-| `test_rhs_conserves_mass_at_arbitrary_positive_state` | Algebraic mass conservation for both RHS forms |
-| `test_linear_eigen_decomposition_agrees_with_expm` | Eigenmode solution agrees with matrix exponential |
-| `test_linear_stiff_solver_agrees_with_expm` | LSODA linear trajectory agrees with matrix exponential |
-| `test_nonlinear_mass_conservation` | Integrated nonlinear trajectory conserves total inventory |
-| `test_nonnegative_populations` | Output contains no significant negative inventory |
-| `test_analytic_equilibrium_satisfies_balance` | Stationary states satisfy balance and zero net flux |
-| `test_nonlinear_long_time_agrees_with_equilibrium` | Long-time numerical state approaches nonlinear equilibrium |
-| `test_nonlinear_peak_detection_rejects_plateau` | Sequential 3→4→5 peaks; suppresses 6-ML plateau artifact |
-| `test_sqrt_regularization_preserves_conservation_and_changes_model` | Regularization changes kinetics but conserves mass; Jacobian structure |
-| `test_multiple_stiff_integrators_are_consistent_at_short_horizon` | LSODA/Radau agreement on a shorter interval |
-| `test_linear_mass_conservation_after_lateral_gt_correction` | Lateral correction preserves the linear conservation identity |
-| `test_regularized_jacobian_matches_finite_differences` | Analytic regularized Jacobian agrees with finite differences |
-| `test_zero_bound_population_has_no_detachment` | Empty populations have zero detachment flux |
-
-Run selected tests:
+The file `test_npl_kinetics.py` contains **19 `test_*` functions**. Its fixtures cache the common reference configuration and a long nonlinear solution. Run:
 
 ```bash
+python -m pytest -v test_npl_kinetics.py
+python -m pytest -q test_npl_kinetics.py
 python -m pytest -q test_npl_kinetics.py -k "jacobian"
 python -m pytest -q test_npl_kinetics.py -k "mass or equilibrium"
-python -m pytest -v test_npl_kinetics.py::test_nonlinear_peak_detection_rejects_plateau
 ```
 
-**Interpretation:** Passing tests verifies mathematical and software consistency under the tested configurations and tolerances. 
+| Category | Tests |
+|---|---|
+| Rate and parameter provenance | `test_reference_rates_match_previous_example`, `test_2ml_threshold_is_parameter_dependent`, `test_thickness_gibbs_thomson_step`, `test_lateral_correction_is_optional_and_monotone`, `test_invalid_parameter_inputs_are_rejected` |
+| Algebraic identities | `test_generator_has_zero_column_sums_and_nonnegative_offdiagonals`, `test_rhs_conserves_mass_at_arbitrary_positive_state`, `test_linear_mass_conservation_after_lateral_gt_correction` |
+| Independent linear solutions | `test_linear_eigen_decomposition_agrees_with_expm`, `test_linear_stiff_solver_agrees_with_expm` |
+| Nonlinear integration | `test_nonlinear_mass_conservation`, `test_nonnegative_populations`, `test_nonlinear_long_time_agrees_with_equilibrium`, `test_multiple_stiff_integrators_are_consistent_at_short_horizon` |
+| Equilibria and peaks | `test_analytic_equilibrium_satisfies_balance`, `test_nonlinear_peak_detection_rejects_plateau` |
+| Optional regularization and derivatives | `test_sqrt_regularization_preserves_conservation_and_changes_model`, `test_regularized_jacobian_matches_finite_differences`, `test_zero_bound_population_has_no_detachment` |
 
-## 10. Optional versus default behavior
+**Interpretation:** these tests check internal mathematical identities and numerical agreement for selected settings. They do **not** constitute experimental confirmation of the underlying growth mechanism. This README describes the supplied tests; it does not itself certify that a particular checkout or software environment has passed them.
 
-| Feature | Default | Optional configuration | Important limitation |
-|---|---|---|---|
-| Thickness classes | 3, 4, 5, 6 ML | `Parameters(thickness_ml=...)` via Python API | CLI `--lateral-nm` still hard-codes four inputs |
-| Lateral GT | Off (`None`) | `--lateral-nm L3 L4 L5 L6` | Fixed representative dimensions, not a dynamic size distribution |
-| Square-root regularization | Off (`epsilon=0`) | `--sqrt-epsilon >0` | Modifies the S22 nonlinear kinetics and stationary state |
-| Stiff integrator | LSODA | BDF or Radau | Check conservation and convergence |
-| Time samples | t=0 + 400 log times | `--points`, `--t-end` | Output samples are not internal steps; sparse sampling may miss roots |
-| Plot | On | `--no-plot` | CSV/JSON remain available |
-| Linear reference | `expm` | Additional eigenmode check | Floating-point errors increase for extreme times/conditioning |
+## 9. Limitations and interpretation boundaries
+
+1. **Model reduction.** The states are thickness-class monomer inventories, not individually resolved platelets; there is no stochastic kMC simulation, concentration field, or dynamical lateral-size distribution.
+2. **Source-model approximation.** The nucleation barrier uses an intercept-based approximation to [R1] S7, not the full free-energy landscape. A numerical match within this implementation is not equivalent to reproducing every result of [R1].
+3. **Optional model changes.** A fixed lateral Gibbs–Thomson-like term and square-root regularization alter the model. Both are **off by default**; compare baseline and modified cases explicitly.
+4. **Materials/observables.** The kinetic parameters are for a CdSe-inspired effective model. [R2] reports CdS experiments at 160–190 °C; its 2-/3-/4-/5-ML optical absorption peaks are independent empirical context, **not outputs calculated by this code**.
+5. **Numerical safeguards are not constraints.** Clipping negative trial-state values is not a positivity-preserving integrator. Long time scales can cause solver-conditioning and peak-detection difficulties.
+6. **Validation scope.** Conservation, solver agreement, and equilibrium tests establish **internal consistency**, not that the selected kinetic equations uniquely explain experiments.
+7. **Physical assumptions.** Geometric factors, rates and parameters are effective approximations; they have not been independently inferred from new measurements here.
+
+For reference, [R2] reports absorption signals at approximately **326 nm (2 ML), 374 nm (3 ML), 407 nm (4 ML), and 429 nm (5 ML)** in its CdS system. The current script **does not calculate absorption spectra or wavelengths**; those values should never be plotted as model predictions.
+
+## 10. References and attribution
+
+- **[R1]** Riedinger, A., Ott, F. D., Mule, A., *et al.* “An intrinsic growth instability in isotropic materials leads to quasi-two-dimensional nanoplatelets.” *Nature Materials* **16**, 743–748 (2017). DOI: [10.1038/nmat4889](https://doi.org/10.1038/nmat4889).
+- **[R2]** Knüsel, P. N., Riedinger, A., Rossinelli, A. A., Ott, F. D., Mule, A. S., Norris, D. J. “Experimental Evidence for Two-Dimensional Ostwald Ripening in Semiconductor Nanoplatelets.” *Chemistry of Materials* **32**(7), 3312–3319 (2020). DOI: [10.1021/acs.chemmater.0c01238](https://doi.org/10.1021/acs.chemmater.0c01238).
+- **[R3]** Ott, F. D., *et al.* “Ripening of Semiconductor Nanoplatelets.” *Nano Letters* **17**, 6870–6877 (2017). DOI: [10.1021/acs.nanolett.7b03191](https://doi.org/10.1021/acs.nanolett.7b03191).
+
+**Attribution statement:** This repository is a **2026 reproduction and numerical learning project** based on published theory and literature parameters. AI assistance was used in the software-development workflow. The scientific credit for the referenced models and experiments remains with the original authors. The numerical tests and documented approximations are intended to make this particular implementation inspectable rather than to claim a new physical discovery.
