@@ -1,0 +1,129 @@
+{
+  "reference_original_CdSe": "Riedinger et al., How semiconductor nanoplatelets form, Nature Materials (2017); arXiv:1605.06553v2 with Supplementary Information",
+  "reference_independent_CdS_experiment": "Knuesel et al., Experimental Evidence for Two-Dimensional Ostwald Ripening in Semiconductor Nanoplatelets, Chemistry of Materials 32 (2020), DOI:10.1021/acs.chemmater.0c01238",
+  "original_values": {
+    "layer_height_A": {
+      "value": 3.1,
+      "unit": "Å",
+      "method": "lattice geometry ",
+      "source": "Riedinger SI  p.26, S4.a, L1=a0/2",
+      "used_value": 3.1,
+      "same_as_original": true
+    },
+    "surface_eV_A2": {
+      "value": 0.0057,
+      "unit": "eV/Å²",
+      "method": "DFT (Se-rich, acetate)",
+      "source": "Riedinger SI  pp.26,32, equations S1/S25-S28",
+      "used_value": 0.0057,
+      "same_as_original": true
+    },
+    "edge_eV_A": {
+      "value": 0.0371,
+      "unit": "eV/Å",
+      "method": "DFT mean of step geometries ",
+      "source": "Riedinger SI  pp.26,32, S4.c; edge range 24–47 meV/Å",
+      "used_value": 0.0371,
+      "same_as_original": true
+    },
+    "volume_eV_A3": {
+      "value": -0.0015,
+      "unit": "eV/Å³",
+      "method": "experimental constraint ",
+      "source": "Riedinger SI  p.33, S29-S30; 2 ML absent, 3 ML observed",
+      "used_value": -0.0015,
+      "same_as_original": true
+    },
+    "prefactor_s1": {
+      "value": 280000000000.0,
+      "unit": "s⁻¹",
+      "method": "optical kinetic fit ",
+      "source": "Riedinger SI  p.30, S19-S21; normalized absorbance",
+      "used_value": 280000000000.0,
+      "same_as_original": true
+    },
+    "temperature_K": {
+      "value": 473.15,
+      "unit": "K",
+      "method": "model/example condition ",
+      "source": "Riedinger main text  pp.10-11, ~200°C",
+      "used_value": 473.15,
+      "same_as_original": true
+    }
+  },
+  "equations": {
+    "S1": "ΔE = E_V ΔV + E_A ΔA + E_L ΔL",
+    "S2": "ΔE(a,P_island,L_step)=L1 E_V a + L1 E_A P_island + E_L (L_step+4L1)",
+    "S3": "minimum energy at fixed island area a (shape optimization)",
+    "S4-S5": "E_wide(a)=L1 E_V a+(4L1 E_A+2E_L) sqrt(a)+4L1 E_L",
+    "S6-S7": "E_narrow,m(a)=(L1 E_V+2E_A/m)a+2m L1² E_A+(m+4)L1 E_L",
+    "S8": "N_tot = sum_{m in {0,3,4,5,6}} N_m(t)",
+    "S9": "dN_m/dt=k_m N_0-k_{-m} N_m",
+    "S10": "dN_0/dt=-N_0 sum_m k_m+sum_m k_{-m} N_m",
+    "S11-S12": "dx/dt=Kx, K column sums=0",
+    "S13-S18": "x(t)=U exp(Λt) U^{-1} x(0) (if K diagonalizable)",
+    "S19": "k_m=C0 m exp(-ΔE‡_m/(k_B T))",
+    "S20": "k_{-m}=C0 m exp(-ΔE‡_m/(k_B T)) A_m",
+    "S21": "A_m=k_{-m}/k_m=exp(ΔH_f,m/(k_B T)); ΔH_f,m=2L1³ E_V+4L1² E_A/m",
+    "S22": "dN_m/dt=k_m N_0²-k_{-m} sqrt(N_m)",
+    "S23": "K_m=exp(-ΔH_f,m/(k_B T))=sqrt(N_m,eq)/(N_0,eq²)",
+    "S24": "N_i,eq/N_j,eq=(K_i/K_j)²",
+    "S29": "dE_narrow,m/da=L1 E_V+2E_A/m<0 for favorable lateral growth",
+    "S30": "-E_A/L1 < E_V < -2E_A/(3L1) (2 ML disfavored, 3 ML favored)"
+  },
+  "CdS_independent_observations": {
+    "material": "CdS, NOT CdSe ",
+    "ripening_temperature_C": [
+      160,
+      170,
+      180,
+      190
+    ],
+    "ripening_hold_h": 12.833333333333334,
+    "baby_2ml_absorption_nm": 326,
+    "population_peaks_nm": {
+      "3_ML": 374,
+      "4_ML": 407,
+      "5_ML": 429
+    },
+    "interpretation": "2-ML disappears below 160°C; thicker groups appear with increased temperature",
+    "source": "Knuesel et al. 2020  pp.4-5, Methods and Figure 2; 2-ML/3-ML assignment via electron/light-hole transitions"
+  },
+  "computed_from_selected_parameters": {
+    "critical_island_area_A2_S5": 242.6894947392762,
+    "wide_peak_energy_eV_S5": 1.5885461505376344,
+    "narrow_intercept_eV_S7": {
+      "3": 1.133732,
+      "4": 1.3582960000000002,
+      "5": 1.5828600000000002,
+      "6": 1.8074240000000001
+    },
+    "formation_energy_eV_S21_or_extension": {
+      "3": -0.016337000000000004,
+      "4": -0.034596,
+      "5": -0.0455514,
+      "6": -0.052855000000000006
+    },
+    "k_on_s1_S19": {
+      "3": 0.7051518733724893,
+      "4": 0.0038130105466222626,
+      "5": 1.9329678263737334e-05,
+      "6": 9.407028879743337e-08
+    },
+    "k_off_s1_S20": {
+      "3": 0.4723548564013378,
+      "4": 0.0016321767228923356,
+      "5": 6.324582621590314e-06,
+      "6": 2.5731499971042056e-08
+    },
+    "critical_thickness_S29": 2.4516129032258065,
+    "EV_bounds_eV_A3_S30": [
+      -0.0018387096774193548,
+      -0.0012258064516129032
+    ]
+  },
+  "original_equations_unmodified": true,
+  "barrier_model": "S7 narrow-branch intercept approximation; not the full minimum-energy island path",
+  "lateral_gt_extension_enabled": false,
+  "note": "Rates are model-derived predictions, NOT directly measured constants; nonlinear rate-law units require normalized dimensionless inventory."
+}
